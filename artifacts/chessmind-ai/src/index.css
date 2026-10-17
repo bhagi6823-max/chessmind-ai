@@ -106,6 +106,14 @@ button:focus-visible { outline: 3px solid #d79266; outline-offset: 3px; }
 .difficulty-list { display:flex; flex-wrap:wrap; gap:6px; }
 .difficulty { border:1px solid #e5dfd3; color:#6b786d; background:#fffdf8; border-radius:8px; padding:7px 10px; font-size:10px; font-weight:700; cursor:pointer; }
 .difficulty.active { border-color:#77917b; background:#edf2e8; color:#355c48; }
+.engine-status { display:flex; align-items:center; gap:8px; margin-top:12px; color:#758278; font-size:11px; line-height:1.5; }
+.engine-status.ready { color:#426d53; }
+.engine-status.error { align-items:flex-start; color:#966b48; }
+.engine-dot { flex:none; width:7px; height:7px; border-radius:50%; background:#c3a77c; }
+.engine-status.ready .engine-dot { background:#70a37d; }
+.engine-status.error .engine-dot { background:#bd765f; }
+.engine-retry { margin-left:auto; flex:none; border:1px solid #ddc9b4; border-radius:8px; background:#fffaf2; color:#8d5b3f; padding:5px 9px; font-size:10px; font-weight:700; cursor:pointer; }
+.engine-retry:hover { background:#f8eee4; }
 .turn-summary { display:flex; align-items:flex-start; gap:12px; padding:13px; background:#f2f4ec; border-radius:13px; margin-top:15px; }
 .turn-symbol { width:32px; height:32px; flex:none; border-radius:10px; display:grid; place-items:center; background:#fffdf7; color:#45684f; font-family:var(--app-font-serif); font-size:19px; }
 .turn-copy strong { display:block; font-size:12px; margin:1px 0 3px; }

@@ -7,6 +7,7 @@ out-tsc
 *.tsbuildinfo
 .expo
 .expo-shared
+artifacts/chessmind-ai/public/engine/
 
 # dependencies
 node_modules

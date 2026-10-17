@@ -1,64 +1,37 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chess, type Square } from 'chess.js';
 import { ArrowLeftRight, BookOpen, RotateCcw, Undo2 } from 'lucide-react';
+import { StockfishEngine, type StockfishStatus } from '@/lib/stockfish-engine';
 
 type Mode = 'computer' | 'two-player';
 type Difficulty = 'Beginner' | 'Easy' | 'Medium' | 'Hard' | 'Expert';
 
 const difficultyDepth: Record<Difficulty, number> = {
-  Beginner: 0,
-  Easy: 1,
-  Medium: 2,
-  Hard: 3,
-  Expert: 4,
+  Beginner: 3,
+  Easy: 5,
+  Medium: 8,
+  Hard: 10,
+  Expert: 12,
 };
 const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
 const glyphs: Record<string, string> = {
   wk: '♔', wq: '♕', wr: '♖', wb: '♗', wn: '♘', wp: '♙',
   bk: '♚', bq: '♛', br: '♜', bb: '♝', bn: '♞', bp: '♟',
 };
-const value: Record<string, number> = { p: 100, n: 320, b: 335, r: 500, q: 900, k: 0 };
-
-function chooseBotMove(game: Chess, level: Difficulty) {
-  const legalMoves = game.moves({ verbose: true });
-  if (!legalMoves.length) return null;
-  const depth = difficultyDepth[level];
-  const scored = legalMoves.map((move) => {
-    const trial = new Chess(game.fen());
-    const played = trial.move({ from: move.from, to: move.to, promotion: 'q' });
-    let score = Math.random() * (depth === 0 ? 540 : depth === 1 ? 270 : depth === 2 ? 110 : depth === 3 ? 38 : 12);
-    if (played?.captured) score += value[played.captured] * (depth > 1 ? 1 : 0.55);
-    if (played?.promotion) score += value[played.promotion] - 100;
-    if (trial.isCheckmate()) score += 100000;
-    else if (trial.isCheck()) score += depth > 1 ? 55 : 20;
-    if (trial.isDraw()) score -= 18;
-    const center = (square: string) => {
-      const file = files.indexOf(square[0]);
-      const rank = Number(square[1]) - 1;
-      return 3.5 - (Math.abs(file - 3.5) + Math.abs(rank - 3.5)) / 2;
-    };
-    if (move.piece !== 'p' && move.piece !== 'k') score += center(move.to) * (depth > 2 ? 5 : 2);
-    if (depth > 1 && played?.captured) {
-      const replies = trial.moves({ verbose: true });
-      if (replies.some((reply) => reply.to === move.to && reply.captured)) {
-        score -= value[played.piece] * (depth > 2 ? 0.75 : 0.35);
-      }
-    }
-    return { move, score };
-  });
-  scored.sort((a, b) => b.score - a.score);
-  const wiggle = depth <= 1 ? Math.min(3, scored.length) : depth === 2 ? Math.min(2, scored.length) : 1;
-  return scored[Math.floor(Math.random() * wiggle)]?.move ?? scored[0].move;
-}
 
 function App() {
   const gameRef = useRef(new Chess());
+  const engineRef = useRef<StockfishEngine | null>(null);
+  const requestKeyRef = useRef<string | null>(null);
+  const generationRef = useRef(0);
   const [fen, setFen] = useState(gameRef.current.fen());
   const [mode, setMode] = useState<Mode>('computer');
   const [difficulty, setDifficulty] = useState<Difficulty>('Beginner');
   const [selected, setSelected] = useState<Square | null>(null);
   const [thinking, setThinking] = useState(false);
   const [notice, setNotice] = useState('');
+  const [engineAttempt, setEngineAttempt] = useState(0);
+  const [engineState, setEngineState] = useState<{ status: StockfishStatus; error?: string }>({ status: 'loading' });
 
   const game = gameRef.current;
   const turn = game.turn();
@@ -73,6 +46,16 @@ function App() {
   const board = game.board();
   const isComputerTurn = mode === 'computer' && turn === 'b' && !gameOver;
 
+  useEffect(() => {
+    const engine = new StockfishEngine((status, error) => setEngineState({ status, error }));
+    engineRef.current = engine;
+    return () => {
+      generationRef.current += 1;
+      if (engineRef.current === engine) engineRef.current = null;
+      engine.dispose();
+    };
+  }, [engineAttempt]);
+
   const syncPosition = useCallback(() => {
     setFen(gameRef.current.fen());
     setSelected(null);
@@ -80,6 +63,8 @@ function App() {
   }, []);
 
   const resetGame = useCallback(() => {
+    generationRef.current += 1;
+    requestKeyRef.current = null;
     gameRef.current = new Chess();
     setFen(gameRef.current.fen());
     setSelected(null);
@@ -103,21 +88,49 @@ function App() {
   }, [syncPosition]);
 
   useEffect(() => {
-    if (!isComputerTurn) return;
+    if (!isComputerTurn || engineState.status === 'error' || requestKeyRef.current === fen) return;
+    const engine = engineRef.current;
+    if (!engine) return;
+    requestKeyRef.current = fen;
+    const requestGeneration = generationRef.current;
     setThinking(true);
-    const timer = window.setTimeout(() => {
-      const choice = chooseBotMove(gameRef.current, difficulty);
-      if (choice) gameRef.current.move({ from: choice.from, to: choice.to, promotion: 'q' });
+    setNotice('');
+    void engine.requestBestMove(fen, difficultyDepth[difficulty]).then((uci) => {
+      if (generationRef.current !== requestGeneration) return;
+      if (gameRef.current.fen() !== fen || mode !== 'computer' || gameRef.current.turn() !== 'b') return;
+
+      const match = /^([a-h][1-8])([a-h][1-8])([qrbn])?$/.exec(uci);
+      if (!match) throw new Error(`Stockfish returned an invalid UCI move: ${uci}`);
+      const [, from, to, promotion] = match;
+      const legalMove = gameRef.current.moves({ verbose: true }).find((move) =>
+        move.from === from &&
+        move.to === to &&
+        (promotion ? move.promotion === promotion : !move.promotion),
+      );
+      if (!legalMove) throw new Error(`Stockfish returned a move chess.js considers illegal: ${uci}`);
+
+      gameRef.current.move({
+        from: legalMove.from,
+        to: legalMove.to,
+        ...(legalMove.promotion ? { promotion: legalMove.promotion } : {}),
+      });
       setFen(gameRef.current.fen());
       setSelected(null);
-      setThinking(false);
       setNotice('');
-    }, 520);
-    return () => window.clearTimeout(timer);
-  }, [fen, difficulty, isComputerTurn]);
+    }).catch((error: unknown) => {
+      if (generationRef.current !== requestGeneration) return;
+      const message = error instanceof Error ? error.message : 'Unknown Stockfish error.';
+      setEngineState((state) => state.status === 'error' ? state : { status: 'error', error: message });
+      setNotice(`Stockfish could not make a move: ${message}`);
+    }).finally(() => {
+      if (generationRef.current !== requestGeneration) return;
+      setThinking(false);
+      requestKeyRef.current = null;
+    });
+  }, [difficulty, engineState.status, fen, isComputerTurn, mode]);
 
   const onSquareClick = (square: Square) => {
-    if (gameOver || thinking || isComputerTurn) return;
+    if (gameOver || thinking || isComputerTurn || (mode === 'computer' && engineState.status === 'error')) return;
     const piece = game.get(square);
     if (selected && legalDestinations.includes(square)) {
       makeMove(selected, square);
@@ -141,6 +154,15 @@ function App() {
     setNotice('');
   };
 
+  const retryEngine = () => {
+    generationRef.current += 1;
+    requestKeyRef.current = null;
+    setThinking(false);
+    setNotice('');
+    setEngineState({ status: 'loading' });
+    setEngineAttempt((attempt) => attempt + 1);
+  };
+
   const changeMode = (nextMode: Mode) => {
     if (nextMode === mode) return;
     setMode(nextMode);
@@ -151,6 +173,7 @@ function App() {
     if (game.isCheckmate()) return `Checkmate — ${turn === 'w' ? 'Black' : 'White'} wins`;
     if (game.isStalemate()) return 'Stalemate — the game is a draw';
     if (game.isDraw()) return 'Draw — the game has ended';
+    if (mode === 'computer' && engineState.status === 'error') return 'Stockfish unavailable';
     if (thinking) return 'ChessMind is thinking…';
     return mode === 'two-player'
       ? `${turn === 'w' ? 'White' : 'Black'} to move`
@@ -162,6 +185,7 @@ function App() {
   const checkMessage = `${checkedKing} king is in check. Find a safe square or block the attack.`;
   const turnMessage = gameOver
     ? 'A good game is always a lesson. Start again when you are ready.'
+    : mode === 'computer' && engineState.status === 'error' ? 'Retry Stockfish or switch to Two Player to continue.'
     : thinking ? 'Finding a thoughtful move for this level.'
       : game.isCheck() ? checkMessage
         : mode === 'two-player' ? 'Take turns from the same board, one move at a time.'
@@ -201,7 +225,7 @@ function App() {
             </div>
           </div>
           <div className={`board-frame ${thinking ? 'board-waiting' : ''}`}>
-            <div className="chess-board" role="grid" aria-label="Chess board, White at the bottom" data-testid="chess-board">
+            <div className="chess-board" role="grid" aria-label="Chess board, White at the bottom" data-testid="chess-board" data-fen={fen}>
               {board.flatMap((row, rowIndex) => row.map((piece, colIndex) => {
                 const square = `${files[colIndex]}${8 - rowIndex}` as Square;
                 const isLight = (rowIndex + colIndex) % 2 === 0;
@@ -218,6 +242,7 @@ function App() {
                     aria-selected={isSelected}
                     className={`square ${isLight ? 'light' : 'dark'}${isSelected ? ' selected' : ''}${isLegal ? ` legal${piece ? ' capture' : ''}` : ''}${isLastMove ? ' last-move' : ''}`}
                     onClick={() => onSquareClick(square)}
+                    disabled={mode === 'computer' && engineState.status === 'error'}
                     data-testid={`square-${square}`}
                   >
                     {piece && <span className={`piece ${piece.color === 'w' ? 'white' : 'black'}`} aria-hidden="true">{glyph}</span>}
@@ -239,7 +264,7 @@ function App() {
             <button className="btn" onClick={undoMove} disabled={!history.length || thinking} data-testid="button-undo" type="button">
               <Undo2 aria-hidden="true" /> Undo
             </button>
-            <button className="btn" onClick={() => changeMode(mode === 'computer' ? 'two-player' : 'computer')} data-testid="button-switch-mode" type="button">
+            <button className="btn" onClick={() => changeMode(mode === 'computer' ? 'two-player' : 'computer')} disabled={mode === 'two-player' && engineState.status === 'error'} data-testid="button-switch-mode" type="button">
               <ArrowLeftRight aria-hidden="true" /> Switch
             </button>
           </div>
@@ -252,7 +277,7 @@ function App() {
               <span className="section-eyebrow">Game setup</span>
             </div>
             <div className="mode-switch" role="group" aria-label="Choose game mode">
-              <button type="button" className={`mode-option ${mode === 'computer' ? 'active' : ''}`} aria-pressed={mode === 'computer'} onClick={() => changeMode('computer')} data-testid="mode-computer">Play vs Computer</button>
+              <button type="button" className={`mode-option ${mode === 'computer' ? 'active' : ''}`} aria-pressed={mode === 'computer'} onClick={() => changeMode('computer')} disabled={engineState.status === 'error'} data-testid="mode-computer">Play vs Computer</button>
               <button type="button" className={`mode-option ${mode === 'two-player' ? 'active' : ''}`} aria-pressed={mode === 'two-player'} onClick={() => changeMode('two-player')} data-testid="mode-two-player">Two Player</button>
             </div>
             {mode === 'computer' && (
@@ -265,6 +290,17 @@ function App() {
                     </button>
                   ))}
                 </div>
+              </div>
+            )}
+            {mode === 'computer' && (
+              <div className={`engine-status ${engineState.status}`} data-testid="engine-status" role="status" aria-live="polite">
+                <span className="engine-dot" aria-hidden="true" />
+                <span>
+                  {engineState.status === 'ready' ? 'Stockfish engine ready' : engineState.status === 'loading' ? 'Loading Stockfish engine…' : `Stockfish error: ${engineState.error ?? 'Unknown loading error.'}`}
+                </span>
+                {engineState.status === 'error' && (
+                  <button className="engine-retry" type="button" onClick={retryEngine} data-testid="button-retry-engine">Retry</button>
+                )}
               </div>
             )}
             <div className="turn-summary" data-testid="status-game-state">
