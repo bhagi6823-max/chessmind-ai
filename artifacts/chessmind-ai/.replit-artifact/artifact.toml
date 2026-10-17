@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "ChessMind AI"
+description = "A mobile-friendly chess learning app for beginners, with legal chess moves, local two-player and computer play, game status, move history, difficulty choices, and short Hindi-English lessons."
+version = "1.0.0"
+id = "artifacts/chessmind-ai"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 20135
+
+[services.development]
+run = "pnpm --filter @workspace/chessmind-ai run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/chessmind-ai", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/chessmind-ai/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20135"
+BASE_PATH = "/"
