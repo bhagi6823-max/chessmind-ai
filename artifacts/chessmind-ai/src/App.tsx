@@ -1,18 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chess, type Square } from 'chess.js';
 import { ArrowLeftRight, BookOpen, RotateCcw, Undo2 } from 'lucide-react';
-import { StockfishEngine, type StockfishStatus } from '@/lib/stockfish-engine';
+import {
+  StockfishEngine,
+  STOCKFISH_DIFFICULTIES,
+  type DifficultyLevel,
+  type StockfishStatus,
+} from '@/lib/stockfish-engine';
 
 type Mode = 'computer' | 'two-player';
-type Difficulty = 'Beginner' | 'Easy' | 'Medium' | 'Hard' | 'Expert';
-
-const difficultyDepth: Record<Difficulty, number> = {
-  Beginner: 3,
-  Easy: 5,
-  Medium: 8,
-  Hard: 10,
-  Expert: 12,
-};
+const difficultyLevels = Object.keys(STOCKFISH_DIFFICULTIES) as DifficultyLevel[];
 const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
 const glyphs: Record<string, string> = {
   wk: '♔', wq: '♕', wr: '♖', wb: '♗', wn: '♘', wp: '♙',
@@ -26,7 +23,7 @@ function App() {
   const generationRef = useRef(0);
   const [fen, setFen] = useState(gameRef.current.fen());
   const [mode, setMode] = useState<Mode>('computer');
-  const [difficulty, setDifficulty] = useState<Difficulty>('Beginner');
+  const [difficulty, setDifficulty] = useState<DifficultyLevel>('Beginner');
   const [selected, setSelected] = useState<Square | null>(null);
   const [thinking, setThinking] = useState(false);
   const [notice, setNotice] = useState('');
@@ -65,6 +62,7 @@ function App() {
   const resetGame = useCallback(() => {
     generationRef.current += 1;
     requestKeyRef.current = null;
+    engineRef.current?.newGame();
     gameRef.current = new Chess();
     setFen(gameRef.current.fen());
     setSelected(null);
@@ -95,7 +93,7 @@ function App() {
     const requestGeneration = generationRef.current;
     setThinking(true);
     setNotice('');
-    void engine.requestBestMove(fen, difficultyDepth[difficulty]).then((uci) => {
+    void engine.requestBestMove(fen, STOCKFISH_DIFFICULTIES[difficulty]).then((uci) => {
       if (generationRef.current !== requestGeneration) return;
       if (gameRef.current.fen() !== fen || mode !== 'computer' || gameRef.current.turn() !== 'b') return;
 
@@ -284,8 +282,8 @@ function App() {
               <div className="difficulty-wrap">
                 <span className="field-label">Choose a comfortable level</span>
                 <div className="difficulty-list" role="group" aria-label="Computer difficulty">
-                  {(['Beginner', 'Easy', 'Medium', 'Hard', 'Expert'] as Difficulty[]).map((level) => (
-                    <button key={level} type="button" className={`difficulty ${difficulty === level ? 'active' : ''}`} aria-pressed={difficulty === level} onClick={() => setDifficulty(level)} data-testid={`difficulty-${level.toLowerCase()}`}>
+                  {difficultyLevels.map((level) => (
+                    <button key={level} type="button" className={`difficulty ${difficulty === level ? 'active' : ''}`} aria-pressed={difficulty === level} onClick={() => setDifficulty(level)} disabled={thinking} data-testid={`difficulty-${level.toLowerCase()}`}>
                       {level}
                     </button>
                   ))}
