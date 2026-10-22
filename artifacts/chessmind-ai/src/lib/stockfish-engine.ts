@@ -8,6 +8,14 @@ export type StockfishSearchSettings = {
   moveTimeMs: number;
 };
 
+export type StockfishPositionAnalysis = {
+  bestMoveUci: string | null;
+  scoreCp: number | null;
+  mateIn: number | null;
+  depth: number;
+  pv: string[];
+};
+
 export const STOCKFISH_DIFFICULTIES = {
   Beginner: { limitStrength: true, elo: 1320, skillLevel: 0, depth: 2, moveTimeMs: 250 },
   Easy: { limitStrength: true, elo: 1420, skillLevel: 3, depth: 3, moveTimeMs: 350 },
@@ -21,12 +29,24 @@ export const STOCKFISH_DIFFICULTIES = {
 
 export type DifficultyLevel = keyof typeof STOCKFISH_DIFFICULTIES;
 
-type EngineRequest = {
+type EngineRequestBase = {
   fen: string;
   settings: StockfishSearchSettings;
-  resolve: (uci: string) => void;
   reject: (error: Error) => void;
 };
+
+type MoveRequest = EngineRequestBase & {
+  kind: 'move';
+  resolve: (uci: string) => void;
+};
+
+type AnalysisRequest = EngineRequestBase & {
+  kind: 'analysis';
+  latestInfo: Omit<StockfishPositionAnalysis, 'bestMoveUci'> | null;
+  resolve: (analysis: StockfishPositionAnalysis) => void;
+};
+
+type EngineRequest = MoveRequest | AnalysisRequest;
 
 export class StockfishEngine {
   private worker: Worker | null = null;
@@ -65,28 +85,13 @@ export class StockfishEngine {
 
   requestBestMove(fen: string, settings: StockfishSearchSettings): Promise<string> {
     return new Promise((resolve, reject) => {
-      if (this.disposed) {
-        reject(new Error('The Stockfish worker has been stopped.'));
-        return;
-      }
-      if (this.status === 'error') {
-        reject(new Error('Stockfish is unavailable. Retry the engine before starting a computer game.'));
-        return;
-      }
+      this.enqueue({ kind: 'move', fen, settings, resolve, reject });
+    });
+  }
 
-      if (
-        !Number.isInteger(settings.skillLevel) || settings.skillLevel < 0 || settings.skillLevel > 20 ||
-        (settings.elo !== null && (!Number.isInteger(settings.elo) || settings.elo < 1320 || settings.elo > 3190)) ||
-        (settings.limitStrength && settings.elo === null) ||
-        !Number.isInteger(settings.depth) || settings.depth < 1 ||
-        !Number.isInteger(settings.moveTimeMs) || settings.moveTimeMs < 1
-      ) {
-        reject(new Error('The selected Stockfish difficulty has unsupported engine settings.'));
-        return;
-      }
-
-      this.queue.push({ fen, settings, resolve, reject });
-      this.runNext();
+  analyzePosition(fen: string, settings: StockfishSearchSettings): Promise<StockfishPositionAnalysis> {
+    return new Promise((resolve, reject) => {
+      this.enqueue({ kind: 'analysis', fen, settings, latestInfo: null, resolve, reject });
     });
   }
 
@@ -133,15 +138,74 @@ export class StockfishEngine {
       return;
     }
 
+    const info = this.parseInfo(line);
+    if (info && this.activeRequest?.kind === 'analysis') {
+      const previous = this.activeRequest.latestInfo;
+      if (!previous || info.depth >= previous.depth) {
+        this.activeRequest.latestInfo = info;
+      }
+      return;
+    }
+
     const bestMove = /^bestmove\s+(\S+)/.exec(line);
     if (bestMove && this.activeRequest) {
       const request = this.activeRequest;
       this.activeRequest = null;
       if (this.searchTimeout !== undefined) window.clearTimeout(this.searchTimeout);
       this.searchTimeout = undefined;
-      request.resolve(bestMove[1]);
+      if (request.kind === 'move') {
+        request.resolve(bestMove[1]);
+      } else {
+        request.resolve({
+          bestMoveUci: bestMove[1] === '(none)' || bestMove[1] === '0000' ? null : bestMove[1],
+          scoreCp: request.latestInfo?.scoreCp ?? null,
+          mateIn: request.latestInfo?.mateIn ?? null,
+          depth: request.latestInfo?.depth ?? 0,
+          pv: request.latestInfo?.pv ?? [],
+        });
+      }
       this.runNext();
     }
+  }
+
+  private enqueue(request: EngineRequest) {
+    if (this.disposed) {
+      request.reject(new Error('The Stockfish worker has been stopped.'));
+      return;
+    }
+    if (this.status === 'error') {
+      request.reject(new Error('Stockfish is unavailable. Retry the engine before requesting analysis.'));
+      return;
+    }
+    if (!this.hasValidSettings(request.settings)) {
+      request.reject(new Error('The selected Stockfish settings are outside the supported range.'));
+      return;
+    }
+    this.queue.push(request);
+    this.runNext();
+  }
+
+  private hasValidSettings(settings: StockfishSearchSettings) {
+    return Number.isInteger(settings.skillLevel) && settings.skillLevel >= 0 && settings.skillLevel <= 20 &&
+      (settings.elo === null || (Number.isInteger(settings.elo) && settings.elo >= 1320 && settings.elo <= 3190)) &&
+      (!settings.limitStrength || settings.elo !== null) &&
+      Number.isInteger(settings.depth) && settings.depth >= 1 &&
+      Number.isInteger(settings.moveTimeMs) && settings.moveTimeMs >= 1;
+  }
+
+  private parseInfo(line: string): Omit<StockfishPositionAnalysis, 'bestMoveUci'> | null {
+    if (!line.startsWith('info ')) return null;
+    const depth = /\bdepth\s+(\d+)/.exec(line);
+    const score = /\bscore\s+(cp|mate)\s+(-?\d+)/.exec(line);
+    if (!depth || !score) return null;
+    const pv = /\bpv\s+(.+)$/.exec(line);
+    const value = Number(score[2]);
+    return {
+      scoreCp: score[1] === 'cp' ? value : null,
+      mateIn: score[1] === 'mate' ? value : null,
+      depth: Number(depth[1]),
+      pv: pv ? pv[1].trim().split(/\s+/) : [],
+    };
   }
 
   private runNext() {
@@ -186,7 +250,11 @@ export class StockfishEngine {
       return;
     }
     this.searchTimeout = window.setTimeout(() => {
-      this.fail(new Error('Stockfish did not finish its move within the allowed time.'));
+      this.fail(new Error(
+        request.kind === 'analysis'
+          ? 'Stockfish did not finish the analysis within the allowed time.'
+          : 'Stockfish did not finish its move within the allowed time.',
+      ));
     }, request.settings.moveTimeMs + 5_000);
     try {
       worker.postMessage(`position fen ${request.fen}`);
