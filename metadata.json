@@ -1,0 +1,6 @@
+{
+  "name": "ChessMind AI",
+  "description": "Play chess, learn legal moves, and practice the basics with beginner-friendly lessons and AI-powered coach in English and Hindi.",
+  "permissions": [],
+  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

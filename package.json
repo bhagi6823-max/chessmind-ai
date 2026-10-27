@@ -3,10 +3,10 @@
   "version": "0.0.0",
   "license": "MIT",
   "scripts": {
-    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
-    "build": "pnpm run typecheck && pnpm -r --if-present run build",
-    "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
+    "dev": "npm run dev --workspace=@workspace/chessmind-ai",
+    "build": "npm run build --workspace=@workspace/chessmind-ai",
+    "typecheck": "tsc --build",
+    "lint": "npm run typecheck --workspace=@workspace/chessmind-ai"
   },
   "private": true,
   "dependencies": {
@@ -15,5 +15,14 @@
   "devDependencies": {
     "prettier": "^3.9.6",
     "typescript": "~5.9.3"
+  },
+  "workspaces": [
+    "artifacts/*",
+    "lib/*",
+    "scripts"
+  ],
+  "overrides": {
+    "esbuild": "0.28.2",
+    "js-yaml": "4.3.2"
   }
 }

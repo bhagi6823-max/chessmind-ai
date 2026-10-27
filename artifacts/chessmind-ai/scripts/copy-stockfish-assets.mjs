@@ -4,7 +4,15 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const packageRoot = path.dirname(require.resolve('stockfish'));
+let packageRoot;
+try {
+  packageRoot = path.dirname(require.resolve('stockfish/package.json'));
+} catch {
+  packageRoot = path.dirname(require.resolve('stockfish'));
+  if (path.basename(packageRoot) === 'src') {
+    packageRoot = path.dirname(packageRoot);
+  }
+}
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sourceEngineDir = path.join(packageRoot, 'bin');
 const publicEngineDir = path.join(projectRoot, 'public', 'engine');
